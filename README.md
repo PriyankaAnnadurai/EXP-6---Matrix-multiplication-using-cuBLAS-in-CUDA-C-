@@ -57,65 +57,80 @@ Compare the performance of the GPU-based matrix multiplication using cuBLAS with
 #include <cuda_runtime.h>
 #include <math.h>
 #include <time.h>
+#include <algorithm>
 
 #define index(i,j,ld) (((j)*(ld))+(i))
 
 void initializeMatrix(float *matrix, int size) {
-    for(int i=0;i<size;i++)
-        for(int j=0;j<size;j++)
-            matrix[index(i,j,size)] = (float)(i+j)/size;
+    for(int i = 0; i < size; i++)
+        for(int j = 0; j < size; j++)
+            matrix[index(i,j,size)] = (float)(i + j) / size;
 }
 
 void cpuMatrixMultiplication(float *A, float *B, float *C, int n) {
-    for(int i=0;i<n;i++)
-        for(int j=0;j<n;j++){
+    for(int i = 0; i < n; i++)
+        for(int j = 0; j < n; j++) {
             C[index(i,j,n)] = 0.0f;
-            for(int k=0;k<n;k++)
+            for(int k = 0; k < n; k++)
                 C[index(i,j,n)] += A[index(i,k,n)] * B[index(k,j,n)];
         }
 }
 
-int main(){
+int main() {
     int sizes[] = {256, 512, 1024};
     int numSizes = 3;
 
-    for(int s=0;s<numSizes;s++){
+    for(int s = 0; s < numSizes; s++) {
+
         int size = sizes[s];
         printf("\nMatrix size: %d x %d\n", size, size);
 
-        float *A = (float*)malloc(size*size*sizeof(float));
-        float *B = (float*)malloc(size*size*sizeof(float));
-        float *C_cpu = (float*)malloc(size*size*sizeof(float));
-        float *C_gpu = (float*)malloc(size*size*sizeof(float));
+        float *A = (float*)malloc(size * size * sizeof(float));
+        float *B = (float*)malloc(size * size * sizeof(float));
+        float *C_cpu = (float*)malloc(size * size * sizeof(float));
+        float *C_gpu = (float*)malloc(size * size * sizeof(float));
 
         initializeMatrix(A, size);
         initializeMatrix(B, size);
 
+        // CPU multiplication
         clock_t start_cpu = clock();
-        cpuMatrixMultiplication(A,B,C_cpu,size);
+        cpuMatrixMultiplication(A, B, C_cpu, size);
         clock_t end_cpu = clock();
-        double time_cpu = ((double)(end_cpu - start_cpu))/CLOCKS_PER_SEC;
+        double time_cpu = (double)(end_cpu - start_cpu) / CLOCKS_PER_SEC;
         printf("CPU Matrix Multiplication: %f sec\n", time_cpu);
 
+        // Allocate GPU memory
         float *d_A, *d_B, *d_C;
-        cudaMalloc((void**)&d_A, size*size*sizeof(float));
-        cudaMalloc((void**)&d_B, size*size*sizeof(float));
-        cudaMalloc((void**)&d_C, size*size*sizeof(float));
+        cudaMalloc((void**)&d_A, size * size * sizeof(float));
+        cudaMalloc((void**)&d_B, size * size * sizeof(float));
+        cudaMalloc((void**)&d_C, size * size * sizeof(float));
 
-        cudaMemcpy(d_A,A,size*size*sizeof(float),cudaMemcpyHostToDevice);
-        cudaMemcpy(d_B,B,size*size*sizeof(float),cudaMemcpyHostToDevice);
+        cudaMemcpy(d_A, A, size * size * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_B, B, size * size * sizeof(float), cudaMemcpyHostToDevice);
 
+        // cuBLAS handle
         cublasHandle_t handle;
         cublasCreate(&handle);
-        float alpha=1.0f, beta=0.0f;
 
+        float alpha = 1.0f;
+        float beta  = 0.0f;
+
+        // GPU timing
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
         cudaEventRecord(start);
 
-        cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, size, size, size,
-                    &alpha, d_B, size, d_A, size, &beta, d_C, size);
+        // C = A * B using cuBLAS (column-major)
+        cublasSgemm(handle,
+                    CUBLAS_OP_N, CUBLAS_OP_N,
+                    size, size, size,
+                    &alpha,
+                    d_B, size,
+                    d_A, size,
+                    &beta,
+                    d_C, size);
 
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
@@ -124,24 +139,40 @@ int main(){
         cudaEventElapsedTime(&time_gpu, start, stop);
         printf("GPU Matrix Multiplication (cuBLAS): %f ms\n", time_gpu);
 
-        cudaMemcpy(C_gpu, d_C, size*size*sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(C_gpu, d_C, size * size * sizeof(float), cudaMemcpyDeviceToHost);
 
-        int errors=0;
-        float max_rel_err=1e-4;
-        for(int i=0;i<size*size;i++){
-            float rel_err=fabs(C_cpu[i]-C_gpu[i])/fmax(fabs(C_cpu[i]),fabs(C_gpu[i]));
-            if(rel_err>max_rel_err) errors++;
+        // Verification
+        int errors = 0;
+        float max_rel_err = 1e-4;
+
+        for(int i = 0; i < size * size; i++) {
+            float rel_err = fabs(C_cpu[i] - C_gpu[i]) /
+                            fmax(fabs(C_cpu[i]), fabs(C_gpu[i]));
+            if(rel_err > max_rel_err)
+                errors++;
         }
 
-        if(errors==0) printf("Results verified successfully for size %d x %d\n", size, size);
-        else printf("Discrepancies found in size %d x %d\n", size, size);
+        if(errors == 0)
+            printf("Results verified successfully for size %d x %d\n", size, size);
+        else
+            printf("Discrepancies found in size %d x %d\n", size, size);
 
+        // Cleanup
         cublasDestroy(handle);
-        cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
-        free(A); free(B); free(C_cpu); free(C_gpu);
+        cudaFree(d_A);
+        cudaFree(d_B);
+        cudaFree(d_C);
+        free(A);
+        free(B);
+        free(C_cpu);
+        free(C_gpu);
     }
+
     return 0;
 }
+
+!nvcc -lcublas matrix_mul.cu -o matrix_mul
+!./matrix_mul
 ```
 
 # OUTPUT:
